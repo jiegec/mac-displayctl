@@ -9,7 +9,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import cadisplay as ca, cg as cgs, objc_bridge as objc, system, timing
+from . import cadisplay as ca, cg as cgs, edid, objc_bridge as objc, system, timing
 
 VERSION = "0.1.0"
 
@@ -316,7 +316,7 @@ def cmd_list(args) -> int:
     return 0
 
 
-def _print_info_state(state: dict, timing_result) -> None:
+def _print_info_state(state: dict, timing_result, edid_info=None) -> None:
     print(f"Display {state['id']}: {state['name']}")
     print(
         f"  Type: {'built-in' if state['builtin'] else 'external'}"
@@ -329,6 +329,14 @@ def _print_info_state(state: dict, timing_result) -> None:
     )
     print(f"  UUID: {state['uuid'] or 'unknown'}")
     print(f"  Rotation: {state['rotation']:.1f}°")
+
+    if edid_info is not None:
+        lines = edid.summary(edid_info)
+        print(f"  {lines[0]}")
+        for line in lines[1:]:
+            print(f"        {line}")
+    else:
+        print("  EDID: not available")
 
     cgs_mode = state["cgs"]
     if cgs_mode:
@@ -411,11 +419,17 @@ def cmd_info(args) -> int:
         raise RuntimeError("no online displays found")
 
     entries = []
+    edid_blobs = _safe(lambda: edid.read_all(displays), {})
     for display in displays:
         state = _display_state(display)
         gamma = _safe(lambda: system.get_gamma(display).to_dict(), None)
         if gamma:
             state["gamma"] = gamma
+        edid_data = edid_blobs.get(display)
+        edid_info = _safe(
+            lambda data=edid_data: edid.parse(data) if data else None, None
+        )
+        state["edid"] = edid_info.to_dict() if edid_info else None
         timing_result = _safe(lambda: timing.current(display), None)
         if timing_result:
             item, framebuffer = timing_result
@@ -433,17 +447,73 @@ def cmd_info(args) -> int:
                     ),
                 },
             }
-        entries.append((state, timing_result))
+        entries.append((state, timing_result, edid_info))
 
     if args.json:
-        payload = [state for state, _ in entries]
+        payload = [state for state, _, _ in entries]
         _json(payload[0] if args.display and len(payload) == 1 else payload)
         return 0
 
-    for index, (state, timing_result) in enumerate(entries):
+    for index, (state, timing_result, edid_info) in enumerate(entries):
         if index:
             print()
-        _print_info_state(state, timing_result)
+        _print_info_state(state, timing_result, edid_info)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# edids
+# ---------------------------------------------------------------------------
+
+
+def cmd_edids(args) -> int:
+    displays = _query_displays(args)
+    if not displays:
+        raise RuntimeError("no online displays found")
+
+    entries = []
+    blobs = edid.read_all(displays)
+    for display in displays:
+        data = blobs.get(display)
+        info = None
+        error = None
+        if data:
+            try:
+                info = edid.parse(data)
+            except Exception as exc:
+                error = str(exc)
+        entry: dict = {
+            "display": display,
+            "name": _display_title(display),
+            "present": bool(data),
+        }
+        if info:
+            entry.update(info.to_dict())
+        if error:
+            entry["error"] = error
+        entries.append((entry, data, info))
+
+    if args.json:
+        payload = [entry for entry, _, _ in entries]
+        _json(payload[0] if args.display and len(payload) == 1 else payload)
+        return 0
+
+    for index, (entry, data, info) in enumerate(entries):
+        if index:
+            print()
+        print(f"Display {entry['display']}: {entry['name']}")
+        if not data:
+            print("  no EDID available")
+            continue
+        if info is None:
+            print(f"  cannot parse EDID: {entry.get('error', 'unknown error')}")
+            continue
+        for line in edid.report(info):
+            print(f"  {line}")
+        if args.hex:
+            print("  raw:")
+            for line in edid.hexdump(data):
+                print(line)
     return 0
 
 
@@ -1135,6 +1205,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_query(p)
     _add_display(p)
     p.set_defaults(func=cmd_info)
+
+    p = sub.add_parser("edids", help="list and parse the EDID of each display")
+    _add_query(p)
+    _add_display(p)
+    p.add_argument("--hex", action="store_true", help="dump the raw EDID blocks")
+    p.set_defaults(func=cmd_edids)
 
     p = sub.add_parser(
         "modes",

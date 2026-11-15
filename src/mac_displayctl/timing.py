@@ -2,60 +2,20 @@
 
 from __future__ import annotations
 
-import ctypes
-from ctypes import POINTER, byref, c_char_p, c_uint32, c_void_p
 from dataclasses import dataclass, field
 
-from . import cadisplay as ca, cg as cgs, corefoundation as cf
-
-IOKIT = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
-
-IOKIT.IOServiceMatching.argtypes = [c_char_p]
-IOKIT.IOServiceMatching.restype = c_void_p
-IOKIT.IOServiceGetMatchingServices.argtypes = [c_uint32, c_void_p, POINTER(c_uint32)]
-IOKIT.IOServiceGetMatchingServices.restype = ctypes.c_int
-IOKIT.IOIteratorNext.argtypes = [c_uint32]
-IOKIT.IOIteratorNext.restype = c_uint32
-IOKIT.IOObjectRelease.argtypes = [c_uint32]
-IOKIT.IOObjectRelease.restype = ctypes.c_int
-IOKIT.IORegistryEntryCreateCFProperty.argtypes = [
-    c_uint32,
-    c_void_p,
-    c_void_p,
-    c_uint32,
-]
-IOKIT.IORegistryEntryCreateCFProperty.restype = c_void_p
+from . import cadisplay as ca, cg as cgs, corefoundation as cf, iokit
 
 CLASS_NAMES = ("IOMobileFramebufferShim", "IOFramebuffer")
 
 
 def _property(service: int, key: str) -> int | None:
-    key_ref = cf.cfstr(key)
-    try:
-        return IOKIT.IORegistryEntryCreateCFProperty(service, key_ref, None, 0)
-    finally:
-        cf.release(key_ref)
+    return iokit.property_of(service, key)
 
 
 def _services():
     for class_name in CLASS_NAMES:
-        matching = IOKIT.IOServiceMatching(class_name.encode("ascii"))
-        if not matching:
-            continue
-        iterator = c_uint32(0)
-        if IOKIT.IOServiceGetMatchingServices(0, matching, byref(iterator)) != 0:
-            continue
-        try:
-            while True:
-                service = IOKIT.IOIteratorNext(iterator.value)
-                if not service:
-                    break
-                try:
-                    yield service
-                finally:
-                    IOKIT.IOObjectRelease(service)
-        finally:
-            IOKIT.IOObjectRelease(iterator.value)
+        yield from iokit.services(class_name)
 
 
 def _attr(dictionary: int | None, key: str) -> int:

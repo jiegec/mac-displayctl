@@ -75,6 +75,7 @@ CF.CFDataGetLength.argtypes = [c_void_p]
 CF.CFDataGetLength.restype = c_long
 CF.CFDataGetBytePtr.argtypes = [c_void_p]
 CF.CFDataGetBytePtr.restype = POINTER(c_uint8)
+CF.CFDataGetTypeID.restype = c_ulong
 
 CF.CFArrayGetCount.argtypes = [c_void_p]
 CF.CFArrayGetCount.restype = c_long
@@ -234,6 +235,8 @@ def to_bool(ref: int | None, default: bool = False) -> bool:
 
 def data_bytes(ref: int | None) -> bytes | None:
     if not ref:
+        return None
+    if CF.CFGetTypeID(ref) != CF.CFDataGetTypeID():
         return None
     n = CF.CFDataGetLength(ref)
     if n <= 0:

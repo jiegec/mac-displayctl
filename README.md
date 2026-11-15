@@ -9,6 +9,7 @@ A small macOS command-line tool for display control:
 - CoreDisplay reference presets
 - gamma, brightness
 - horizontal/vertical timing (total, blank, front porch, sync, back porch)
+- EDID enumeration and parsing (base block, CTA-861, DisplayID)
 
 Implemented with the Python standard library (`ctypes`) only. `uv` pins and
 manages the interpreter.
@@ -23,6 +24,7 @@ uv python install 3.13
 uv sync
 uv run mac-displayctl list
 uv run mac-displayctl info -d 2
+uv run mac-displayctl edids
 uv run mac-displayctl modes -d 2
 uv run mac-displayctl colors -d 2
 ```
@@ -32,7 +34,8 @@ uv run mac-displayctl colors -d 2
 | Command | Purpose |
 |---|---|
 | `list [-d ID]` | one-line summary of every online display |
-| `info [-d ID]` | detailed state for all displays, or one with `-d`, including current timing |
+| `info [-d ID]` | detailed state for all displays, or one with `-d`, including current timing and EDID summary |
+| `edids [-d ID] [--hex]` | list and parse the EDID of every display |
 | `modes [-d ID]` | list Core Graphics Services (CGS) modes (resolution / refresh / pixel encoding) |
 | `colors [-d ID]` | list Core Animation display color modes (format / depth / range / HDR) |
 | `profiles [-d ID]` | list ColorSync ICC profiles |
@@ -46,15 +49,28 @@ uv run mac-displayctl colors -d 2
 | `set-gamma-formula [-d ID] ...` | set the nine transfer formula values |
 | `set-brightness [-d ID] N` | set DisplayServices brightness |
 
-Read-only commands (`list`, `info`, `modes`, `colors`, `profiles`, `presets`)
-default to all online displays; use `-d ID` to narrow to one display. Changing
-commands (`set-*`) default to the main display unless `-d ID` is given.
-`info` reports the current profile, preset, gamma, brightness, HDR status and
-timing for each display; `profiles` and `presets` list the installed sets.
+Read-only commands (`list`, `info`, `edids`, `modes`, `colors`, `profiles`,
+`presets`) default to all online displays; use `-d ID` to narrow to one
+display. Changing commands (`set-*`) default to the main display unless
+`-d ID` is given. `info` reports the current profile, preset, gamma,
+brightness, HDR status, EDID summary and timing for each display; `profiles`
+and `presets` list the installed sets.
+
+`edids` reads the EDID the system has for a display: from `IODisplayEDID` on
+the display's IOKit service when that exists (Intel Macs and older releases),
+otherwise from the `EDID` property published by the DCP transport nodes on
+Apple Silicon, matched to the CoreGraphics display by vendor/product/serial.
+Built-in panels on Apple Silicon generally do not publish an EDID, so they
+report `no EDID available`.
 
 ## Examples
 
 ```bash
+# EDID
+uv run mac-displayctl edids
+uv run mac-displayctl edids -d 2 --json
+uv run mac-displayctl edids -d 2 --hex
+
 # resolution
 uv run mac-displayctl set-mode -d 2 --width 1280 --height 720 --refresh 60 -y
 
