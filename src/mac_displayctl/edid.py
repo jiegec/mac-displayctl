@@ -536,8 +536,8 @@ class DetailedTiming:
     v_size_mm: int
     h_border: int
     v_border: int
-    h_polarity: str
-    v_polarity: str
+    h_polarity: str | None
+    v_polarity: str | None
     sync_type: str
     stereo: str
     interlaced: bool
@@ -565,9 +565,10 @@ class DetailedTiming:
         return self.v_active * 2 if self.interlaced else self.v_active
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "pixel_clock_mhz": round(self.pixel_clock_khz / 1000, 4),
-            "active": [self.h_active, self.v_frame_active],
+            # Active/blank/total are the per-field counts stored in the DTD.
+            "active": [self.h_active, self.v_active],
             "blank": [self.h_blank, self.v_blank],
             "front_porch": [self.h_front, self.v_front],
             "sync_width": [self.h_sync, self.v_sync],
@@ -582,6 +583,9 @@ class DetailedTiming:
             "interlaced": self.interlaced,
             "preferred": self.preferred,
         }
+        if self.interlaced:
+            data["frame_active"] = [self.h_active, self.v_frame_active]
+        return data
 
 
 @dataclass(slots=True)
@@ -632,6 +636,10 @@ class Extension:
 def _cta_dict(cta: dict) -> dict:
     data = dict(cta)
     data["detailed_timings"] = [timing.to_dict() for timing in cta["detailed_timings"]]
+    if cta["y420_capable"]:
+        data["y420_capable_modes"] = list(
+            dict.fromkeys(_video_label(vic) for vic in cta["y420_capable"])
+        )
     return data
 
 
@@ -822,7 +830,11 @@ def read_all(displays: list[int]) -> dict[int, bytes]:
 
 
 def _service_edid(display: int) -> bytes | None:
-    service = cgs.CG.CGDisplayIOServicePort(display)
+    try:
+        service = cgs.CG.CGDisplayIOServicePort(display)
+    except AttributeError:
+        # Removed from newer releases; the transport-node path covers them.
+        return None
     if not service:
         return None
     data = _registry_bytes(service, "IODisplayEDID")
@@ -875,10 +887,9 @@ def _identity(data: bytes) -> tuple[int, int, int]:
     return vendor, product_le, serial_le
 
 
-def _score(data: bytes, display: int) -> int:
+def _score(data: bytes, flags: dict) -> int:
     if len(data) < 16 or data[:8] != HEADER:
         return 0
-    flags = cgs.display_flags(display)
     vendor, product_le, serial_le = _identity(data)
     product_be = (data[10] << 8) | data[11]
     serial_be = int.from_bytes(data[12:16], "big")
@@ -893,10 +904,11 @@ def _score(data: bytes, display: int) -> int:
 
 
 def _assign(candidates: list[bytes], displays: list[int], found: dict[int, bytes]) -> None:
+    identities = {display: cgs.display_flags(display) for display in displays}
     scored = []
     for index, data in enumerate(candidates):
         for display in displays:
-            score = _score(data, display)
+            score = _score(data, identities[display])
             if score >= 4:
                 scored.append((score, index, display))
     scored.sort(reverse=True)
@@ -1004,6 +1016,9 @@ def _parse_dtd(block: bytes) -> DetailedTiming | None:
         if h_total and v_period
         else 0.0
     )
+    # The polarity bits only mean sync polarity for digital separate sync;
+    # elsewhere they are serration / sync-on-green flags.
+    sync_code = (flags >> 3) & 0x03
     return DetailedTiming(
         pixel_clock_khz=pixel_clock_khz,
         h_active=h_active,
@@ -1018,9 +1033,9 @@ def _parse_dtd(block: bytes) -> DetailedTiming | None:
         v_size_mm=v_size,
         h_border=block[15],
         v_border=block[16],
-        h_polarity="+" if flags & 0x02 else "-",
-        v_polarity="+" if flags & 0x04 else "-",
-        sync_type=SYNC_TYPES[(flags >> 3) & 0x03],
+        h_polarity=("+" if flags & 0x02 else "-") if sync_code == 3 else None,
+        v_polarity=("+" if flags & 0x04 else "-") if sync_code == 3 else None,
+        sync_type=SYNC_TYPES[sync_code],
         stereo=STEREO_MODES.get(((flags >> 5) & 0x03, flags & 0x01), "none"),
         interlaced=interlaced,
         refresh_hz=refresh,
@@ -1092,7 +1107,7 @@ def _parse_display_descriptor(block: bytes) -> Descriptor:
 
 
 def _parse_descriptor(block: bytes) -> Descriptor:
-    if block[0] == 0 and block[1] == 0:
+    if block[0] == 0 and block[1] == 0 and block[2] == 0:
         return _parse_display_descriptor(block)
     timing = _parse_dtd(block)
     if timing is None:
@@ -1107,6 +1122,11 @@ def _parse_descriptor(block: bytes) -> Descriptor:
 
 def _video_label(vic: int) -> str:
     return VIC_MODES.get(vic, f"VIC {vic}")
+
+
+def _video_labels(vics: list[int]) -> str:
+    """VIC list to mode names, dropping repeats of the same VIC."""
+    return ", ".join(dict.fromkeys(_video_label(vic) for vic in vics))
 
 
 def _video_entry(vic: int, native: bool) -> dict:
@@ -1791,10 +1811,12 @@ def _descriptor_rows(info: EDIDInfo) -> list[tuple[str, str]]:
             rows.append(("Range limits", _range_text(descriptor.range_limits)))
         elif descriptor.text is not None:
             label = descriptor.kind[0].upper() + descriptor.kind[1:]
-            text = f'"{descriptor.text}"'
-            if descriptor.kind == "established timings III":
-                text = descriptor.text
-            rows.append((label, text))
+            quoted = descriptor.kind in (
+                "monitor name",
+                "serial number",
+                "unspecified text",
+            )
+            rows.append((label, f'"{descriptor.text}"' if quoted else descriptor.text))
         elif descriptor.kind != "dummy":
             label = descriptor.kind[0].upper() + descriptor.kind[1:]
             rows.append((label, ""))
@@ -1831,7 +1853,7 @@ def _cta_section(cta: dict) -> list[str]:
     if cta["y420_video"]:
         rows.append(("4:2:0 video", ", ".join(e["mode"] for e in cta["y420_video"])))
     if cta["y420_capable"]:
-        rows.append(("4:2:0 capable", ", ".join(str(vic) for vic in cta["y420_capable"])))
+        rows.append(("4:2:0 capable", _video_labels(cta["y420_capable"])))
     if cta["audio"]:
         rows.append(("Audio", _audio_text(cta["audio"])))
     if cta["speakers"]:
@@ -1867,9 +1889,10 @@ def _displayid_section(displayid: dict) -> list[str]:
 def report(info: EDIDInfo) -> list[str]:
     """Full human-readable EDID report (one line per entry)."""
     status = "OK" if all(info.checksums) else "BAD"
+    header = "header OK" if info.header_ok else "HEADER BAD"
     lines = [
         f"EDID {info.version}, {info.block_count} block(s), {info.length} bytes, "
-        f"checksums {status}"
+        f"{header}, checksums {status}"
     ]
     rows: list[tuple[str, str]] = [
         ("Manufacturer", _manufacturer_text(info)),
@@ -1895,6 +1918,11 @@ def report(info: EDIDInfo) -> list[str]:
         f"{extension.name} (checksum {'OK' if extension.checksum_ok else 'BAD'})"
         for extension in info.extensions
     )
+    if info.declared_extensions != len(info.extensions):
+        extensions += (
+            f" (declared {info.declared_extensions}, "
+            f"present {len(info.extensions)})"
+        )
     rows.append(("Extensions", extensions or "none"))
     lines.extend(_fields(rows))
     for extension in info.extensions:
@@ -1908,8 +1936,10 @@ def report(info: EDIDInfo) -> list[str]:
 def summary(info: EDIDInfo) -> list[str]:
     """Compact EDID summary for the ``info`` command."""
     status = "checksums OK" if all(info.checksums) else "CHECKSUM MISMATCH"
+    header = "header OK" if info.header_ok else "HEADER BAD"
     lines = [
-        f"EDID {info.version}, {info.block_count} block(s), {info.length} bytes, {status}"
+        f"EDID {info.version}, {info.block_count} block(s), {info.length} bytes, "
+        f"{header}, {status}"
     ]
     identity = [_manufacturer_text(info), f"product 0x{info.product_code:04x}"]
     if info.serial_number:
