@@ -192,6 +192,53 @@ def _display_identity(display: int) -> tuple[int, int, str | None, bool]:
     return flags["vendor_id"], flags["product_id"], title, flags["builtin"]
 
 
+def _product_identity(service: int) -> tuple[int, int, str | None]:
+    attrs = _property(service, "DisplayAttributes")
+    if not attrs:
+        return 0, 0, None
+    try:
+        products = cf.dict_get(attrs, "ProductAttributes")
+        if not products:
+            return 0, 0, None
+        return (
+            _attr(products, "LegacyManufacturerID"),
+            _attr(products, "ProductID"),
+            cf.to_str(cf.dict_get(products, "ProductName")),
+        )
+    finally:
+        cf.release(attrs)
+
+
+def pipeline(display: int) -> str | None:
+    """Registry name of the display pipeline node (``disp0``, ``dispext0``).
+
+    The framebuffer services sit under a node named after the display
+    pipeline; the DCP AV service proxies for that pipeline are named
+    ``<pipeline>:dcpav-service-epic:<n>``, which is how a CoreGraphics
+    display is mapped onto an IOAVService.
+    """
+    vendor, product, title, _builtin = _display_identity(display)
+    best_score = 0
+    best: str | None = None
+    for service in _services():
+        service_vendor, service_product, service_name = _product_identity(service)
+        score = 0
+        if service_vendor and service_vendor == vendor:
+            score += 2
+        if service_product and service_product == product:
+            score += 4
+        if service_name and title and service_name == title:
+            score += 2
+        if score <= 0 or score <= best_score:
+            continue
+        parent = iokit.parent_name(service)
+        if not parent:
+            continue
+        best_score = score
+        best = parent
+    return best
+
+
 def _find_framebuffer(display: int) -> Framebuffer | None:
     vendor, product, title, builtin = _display_identity(display)
     best: Framebuffer | None = None

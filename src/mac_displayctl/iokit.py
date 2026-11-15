@@ -26,6 +26,14 @@ IOKIT.IOObjectRelease.argtypes = [c_uint32]
 IOKIT.IOObjectRelease.restype = ctypes.c_int
 IOKIT.IORegistryEntryCreateCFProperty.argtypes = [c_uint32, c_void_p, c_void_p, c_uint32]
 IOKIT.IORegistryEntryCreateCFProperty.restype = c_void_p
+IOKIT.IORegistryEntryGetParentEntry.argtypes = [
+    c_uint32,
+    c_char_p,
+    POINTER(c_uint32),
+]
+IOKIT.IORegistryEntryGetParentEntry.restype = ctypes.c_int
+IOKIT.IORegistryEntryGetName.argtypes = [c_uint32, c_char_p]
+IOKIT.IORegistryEntryGetName.restype = ctypes.c_int
 IOKIT.IODisplayCreateInfoDictionary.argtypes = [c_uint32, c_uint32]
 IOKIT.IODisplayCreateInfoDictionary.restype = c_void_p
 
@@ -65,3 +73,24 @@ def property_of(service: int, key: str) -> int | None:
 def display_info(service: int) -> int | None:
     """``IODisplayCreateInfoDictionary`` for a display service."""
     return IOKIT.IODisplayCreateInfoDictionary(service, 0)
+
+
+def entry_name(entry: int) -> str | None:
+    """Registry node name, e.g. ``dispext0:dcpav-service-epic:0``."""
+    buffer = ctypes.create_string_buffer(256)
+    if IOKIT.IORegistryEntryGetName(entry, buffer) != 0:
+        return None
+    return buffer.value.decode("utf-8", "replace")
+
+
+def parent_name(entry: int) -> str | None:
+    """Name of the node's parent in the IOService plane."""
+    parent = c_uint32(0)
+    if IOKIT.IORegistryEntryGetParentEntry(entry, b"IOService", byref(parent)) != 0:
+        return None
+    if not parent.value:
+        return None
+    try:
+        return entry_name(parent.value)
+    finally:
+        IOKIT.IOObjectRelease(parent.value)

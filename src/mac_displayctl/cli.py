@@ -9,7 +9,15 @@ import signal
 import sys
 from pathlib import Path
 
-from . import cadisplay as ca, cg as cgs, edid, objc_bridge as objc, system, timing
+from . import (
+    cadisplay as ca,
+    cg as cgs,
+    edid,
+    objc_bridge as objc,
+    system,
+    timing,
+    virtual_edid,
+)
 
 VERSION = "0.1.0"
 
@@ -1133,6 +1141,48 @@ def cmd_set_brightness(args) -> int:
     return 0
 
 
+def cmd_set_edid(args) -> int:
+    if args.clear and args.path:
+        raise RuntimeError("give either an EDID file or --clear, not both")
+    if not args.clear and not args.path:
+        raise RuntimeError("give an EDID file, or --clear to remove the virtual EDID")
+
+    reason = virtual_edid.unsupported_reason()
+    if reason:
+        raise RuntimeError(reason)
+
+    display = _resolve_display(args.display)
+    data = None
+    description = ""
+    if not args.clear:
+        data = Path(args.path).read_bytes()
+        problem = edid.validate(data)
+        if problem:
+            raise RuntimeError(f"{args.path}: {problem}")
+        description = edid.summary(edid.parse(data))[1]
+
+    if args.clear:
+        action = "clear the virtual EDID"
+    else:
+        action = f"apply this EDID ({description})"
+
+    if _dry(args):
+        print(f"display {display}: would {action}")
+        return 0
+    if not _confirm(args, f"display {display}: {action}?"):
+        return 1
+
+    if args.clear:
+        virtual_edid.clear(display)
+        print(f"display {display}: virtual EDID cleared")
+    else:
+        assert data is not None
+        virtual_edid.apply(display, data)
+        print(f"display {display}: virtual EDID applied ({description})")
+        print("  not persistent: dropped on unplug, sleep or reboot")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -1339,6 +1389,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_display(p)
     p.add_argument("value", type=float, help="brightness 0.0 .. 1.0")
     p.set_defaults(func=cmd_set_brightness)
+
+    p = sub.add_parser(
+        "set-edid",
+        help="apply an instant virtual EDID (Apple Silicon, macOS 13+)",
+    )
+    _add_action(p)
+    _add_display(p)
+    p.add_argument(
+        "path", nargs="?", help="EDID file made of 128-byte blocks"
+    )
+    p.add_argument("--clear", action="store_true", help="remove the virtual EDID")
+    p.set_defaults(func=cmd_set_edid)
 
     return parser
 

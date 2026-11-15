@@ -1621,6 +1621,26 @@ def parse(data: bytes) -> EDIDInfo:
     )
 
 
+def validate(data: bytes) -> str | None:
+    """Return why ``data`` is not a usable EDID image, or None if it is."""
+    if len(data) < BLOCK_SIZE or len(data) % BLOCK_SIZE:
+        return (
+            f"EDID must be a non-empty multiple of {BLOCK_SIZE} bytes "
+            f"(got {len(data)})"
+        )
+    if data[:8] != HEADER:
+        return "invalid EDID header"
+    blocks = len(data) // BLOCK_SIZE
+    for index in range(blocks):
+        block = data[index * BLOCK_SIZE : (index + 1) * BLOCK_SIZE]
+        if not _checksum_ok(block):
+            return f"block {index} has a bad checksum"
+    declared = data[126]
+    if declared != blocks - 1:
+        return f"declares {declared} extension block(s) but contains {blocks - 1}"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------

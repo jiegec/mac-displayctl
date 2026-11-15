@@ -10,6 +10,7 @@ A small macOS command-line tool for display control:
 - gamma, brightness
 - horizontal/vertical timing (total, blank, front porch, sync, back porch)
 - EDID enumeration and parsing (base block, CTA-861, DisplayID)
+- instant virtual EDID on Apple Silicon (`set-edid`)
 
 Implemented with the Python standard library (`ctypes`) only. `uv` pins and
 manages the interpreter.
@@ -48,6 +49,8 @@ uv run mac-displayctl colors -d 2
 | `set-gamma [-d ID] N` | set a gamma multiplier |
 | `set-gamma-formula [-d ID] ...` | set the nine transfer formula values |
 | `set-brightness [-d ID] N` | set DisplayServices brightness |
+| `set-edid [-d ID] PATH` | apply an instant virtual EDID (Apple Silicon, macOS 13+) |
+| `set-edid [-d ID] --clear` | drop the virtual EDID again |
 
 Read-only commands (`list`, `info`, `edids`, `modes`, `colors`, `profiles`,
 `presets`) default to all online displays; use `-d ID` to narrow to one
@@ -63,6 +66,14 @@ Apple Silicon, matched to the CoreGraphics display by vendor/product/serial.
 Built-in panels on Apple Silicon generally do not publish an EDID, so they
 report `no EDID available`.
 
+`set-edid` injects an EDID through `IOAVServiceSetVirtualEDIDMode` on the
+display pipeline's DCP AV service (`IOAVService`), with no root and no
+override plist. The file must consist of 128-byte EDID blocks with a valid
+header, per-block checksums and a matching extension count. The change is
+**not persistent**: it is dropped on unplug, sleep or reboot, and `--clear`
+removes it immediately. This path only exists on Apple Silicon with macOS 13
+or newer; Intel Macs and older releases have no instant equivalent.
+
 ## Examples
 
 ```bash
@@ -70,6 +81,10 @@ report `no EDID available`.
 uv run mac-displayctl edids
 uv run mac-displayctl edids -d 2 --json
 uv run mac-displayctl edids -d 2 --hex
+
+# instant virtual EDID (Apple Silicon, macOS 13+)
+uv run mac-displayctl set-edid -d 2 ./edid.bin
+uv run mac-displayctl set-edid -d 2 --clear
 
 # resolution
 uv run mac-displayctl set-mode -d 2 --width 1280 --height 720 --refresh 60 -y

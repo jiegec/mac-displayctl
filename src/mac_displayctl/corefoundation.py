@@ -76,6 +76,8 @@ CF.CFDataGetLength.restype = c_long
 CF.CFDataGetBytePtr.argtypes = [c_void_p]
 CF.CFDataGetBytePtr.restype = POINTER(c_uint8)
 CF.CFDataGetTypeID.restype = c_ulong
+CF.CFDataCreate.argtypes = [c_void_p, c_void_p, c_long]
+CF.CFDataCreate.restype = c_void_p
 
 CF.CFArrayGetCount.argtypes = [c_void_p]
 CF.CFArrayGetCount.restype = c_long
@@ -231,6 +233,15 @@ def to_bool(ref: int | None, default: bool = False) -> bool:
     if CF.CFGetTypeID(ref) == CF.CFBooleanGetTypeID():
         return bool(CF.CFBooleanGetValue(ref))
     return bool(to_int(ref, int(default)))
+
+
+def cfdata(data: bytes) -> int:
+    """Wrap bytes in a CFData; the caller owns the returned reference."""
+    buffer = ctypes.create_string_buffer(data, len(data))
+    ref = CF.CFDataCreate(None, buffer, len(data))
+    if not ref:
+        raise MemoryError("CFDataCreate failed")
+    return ref
 
 
 def data_bytes(ref: int | None) -> bytes | None:
