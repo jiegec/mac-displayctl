@@ -1154,17 +1154,25 @@ def cmd_set_edid(args) -> int:
     display = _resolve_display(args.display)
     data = None
     description = ""
+    encoding = "binary"
     if not args.clear:
-        data = Path(args.path).read_bytes()
+        raw = Path(args.path).read_bytes()
+        try:
+            data, encoding = edid.decode_image(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"{args.path}: {exc}") from exc
         problem = edid.validate(data)
         if problem:
+            if encoding == "hex":
+                raise RuntimeError(f"{args.path}: hex EDID: {problem}")
             raise RuntimeError(f"{args.path}: {problem}")
         description = edid.summary(edid.parse(data))[1]
 
     if args.clear:
         action = "clear the virtual EDID"
     else:
-        action = f"apply this EDID ({description})"
+        kind = "hex EDID" if encoding == "hex" else "EDID"
+        action = f"apply this {kind} ({description})"
 
     if _dry(args):
         print(f"display {display}: would {action}")
@@ -1178,7 +1186,8 @@ def cmd_set_edid(args) -> int:
     else:
         assert data is not None
         virtual_edid.apply(display, data)
-        print(f"display {display}: virtual EDID applied ({description})")
+        source = " from hex text" if encoding == "hex" else ""
+        print(f"display {display}: virtual EDID applied{source} ({description})")
         print("  not persistent: dropped on unplug, sleep or reboot")
     return 0
 
@@ -1397,7 +1406,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_action(p)
     _add_display(p)
     p.add_argument(
-        "path", nargs="?", help="EDID file made of 128-byte blocks"
+        "path",
+        nargs="?",
+        help="EDID image file: 128-byte binary blocks or hex text",
     )
     p.add_argument("--clear", action="store_true", help="remove the virtual EDID")
     p.set_defaults(func=cmd_set_edid)

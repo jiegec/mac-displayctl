@@ -1642,6 +1642,59 @@ def validate(data: bytes) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Image files
+# ---------------------------------------------------------------------------
+
+HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def decode_image(raw: bytes) -> tuple[bytes, str]:
+    """Decode an EDID image from raw file contents.
+
+    A binary image (the 128-byte blocks themselves) is returned unchanged.
+    Text made of hex digits with spaces or newlines in between is decoded as
+    hex.  Returns ``(data, encoding)`` with *encoding* either ``"binary"`` or
+    ``"hex"``.
+
+    Raises :class:`ValueError` when the contents are text but decode as neither
+    binary EDID blocks nor hex.
+    """
+    text = _as_text(raw)
+    if text is not None:
+        decoded = _decode_hex(text)
+        if decoded is not None:
+            return decoded, "hex"
+        raise ValueError(
+            "not an EDID image: expected 128-byte blocks with an EDID header, "
+            "or hex text"
+        )
+    return raw, "binary"
+
+
+def _as_text(raw: bytes) -> str | None:
+    """``raw`` as text when it is printable ASCII, else ``None``."""
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(char) < 32 and char not in "\t\n\v\f\r" for char in text):
+        return None
+    return text
+
+
+def _decode_hex(text: str) -> bytes | None:
+    """Decode hex text, ignoring whitespace, or return ``None`` if not hex."""
+    hex_text = "".join(text.split())
+    if not hex_text:
+        return None
+    if any(char not in HEX_DIGITS for char in hex_text):
+        return None
+    if len(hex_text) % 2:
+        raise ValueError(f"hex EDID has an odd number of digits ({len(hex_text)})")
+    return bytes.fromhex(hex_text)
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 
